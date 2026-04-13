@@ -1,0 +1,21 @@
+# Media Renamer — Configuration
+#
+# Copy this file to config.yaml and adjust as needed.
+# API keys should go in .env, not here.
+
+# Duration matching tolerance (±minutes) when comparing MKV files to TMDb runtimes.
+# Increase if your disc runtimes differ significantly from broadcast runtimes
+# (common with PAL DVDs or extended editions).
+duration_tolerance_min: 3.0
+
+# Files shorter than this (minutes) are automatically classified as bonus content.
+# Set lower if you have short TV episodes (e.g., web series).
+bonus_threshold_min: 10.0
+
+# Tolerance (±minutes) when detecting "Play All" concatenated tracks.
+# A file is flagged as Play All if its duration ≈ the sum of all episode-length files.
+play_all_tolerance_min: 5.0
+
+# OpenAI model override. Leave blank or remove to auto-detect the best available model.
+# Examples: gpt-4o, gpt-4o-mini, gpt-4-turbo
+# openai_model: gpt-4o-mini

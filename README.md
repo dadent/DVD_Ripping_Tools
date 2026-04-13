@@ -26,11 +26,11 @@ Same as above but displays MakeMKV output directly to the console and provides a
 - Windows 10/11
 - [MakeMKV](https://www.makemkv.com/) installed (default path: `C:\Program Files (x86)\MakeMKV\makemkvcon64.exe`)
 
-### 2. Media Renamer (Coming Soon)
+### 2. Media Renamer
 
 An intelligent CLI tool that automatically identifies and renames MKV files produced by MakeMKV, organizing them into a Plex-ready folder structure.
 
-**Key features (planned):**
+**Key features:**
 - Scans MakeMKV output directories and extracts metadata (duration, audio, subtitles)
 - Uses OpenAI LLM to interpret cryptic disc labels (e.g., `FRIENDS_S2_D3` → "Friends, Season 2, Disc 3")
 - Queries TMDb for movie/TV episode data and retrieves IMDB/TVDB IDs
@@ -44,12 +44,132 @@ An intelligent CLI tool that automatically identifies and renames MKV files prod
 
 See [Media_Renamer_PRD.md](Media_Renamer_PRD.md) for the full product requirements document and [Media_Renamer_Research.md](Media_Renamer_Research.md) for research notes.
 
+#### Prerequisites
+
+1. **Python 3.12 or higher** must be installed and available on your `PATH`.
+   - Download from [python.org](https://www.python.org/downloads/) — during installation, check **"Add Python to PATH"**.
+   - Verify it's installed by opening PowerShell and running:
+     ```powershell
+     python --version
+     ```
+     You should see `Python 3.12.x` (or higher).
+
+2. **API keys** — the tool uses two external services that require free API keys:
+   - **TMDb** (The Movie Database) — for looking up movies/TV shows and episode data.
+     Register for a free key at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api).
+   - **OpenAI** — for the LLM-powered disc name interpretation.
+     Get a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
+
+#### Setup (First-Time)
+
+The **easiest way** is to just run `rename-media.ps1` — it automatically creates a Python virtual environment and installs all dependencies the first time it runs. No manual steps required beyond having Python installed.
+
+If you prefer to set things up manually (or want to run tests), open PowerShell in the project directory and run:
+
+```powershell
+# 1. Create a virtual environment
+python -m venv .venv
+
+# 2. Activate it
+.\.venv\Scripts\Activate.ps1
+
+# 3. Install the project and its dependencies (including test tools)
+pip install -e ".[dev]"
+```
+
+> **What does this do?**
+> - `python -m venv .venv` creates an isolated Python environment in a `.venv/` folder so packages don't interfere with other Python projects on your machine.
+> - `Activate.ps1` tells your current PowerShell session to use that environment.
+> - `pip install -e ".[dev]"` installs Media Renamer and all its dependencies into the virtual environment. The `-e` flag means "editable" — changes you make to the source code take effect immediately without reinstalling.
+
+#### Configuring API Keys
+
+Copy the example environment file and fill in your keys:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+Replace the placeholder values with your actual API keys:
+```
+TMDB_API_KEY=your_actual_tmdb_key
+OPENAI_API_KEY=your_actual_openai_key
+```
+
+You can also customize matching settings by copying the config file:
+```powershell
+Copy-Item config.yaml.example config.yaml
+```
+
+#### Usage
+
+```powershell
+# Via the PowerShell wrapper (recommended — handles venv automatically):
+.\rename-media.ps1 -Source "E:\MakeMKV_Output" -Dest "E:\PlexStaging"
+
+# Dry-run mode (preview only, no files moved):
+.\rename-media.ps1 -Source "E:\MakeMKV_Output" -Dest "E:\PlexStaging" -DryRun
+
+# Or directly via Python (if you activated the venv manually):
+media-renamer --source "E:\MakeMKV_Output" --dest "E:\PlexStaging" --dry-run
+```
+
+#### Running Tests
+
+```powershell
+# Activate the venv first (if not already active)
+.\.venv\Scripts\Activate.ps1
+
+# Run all tests
+pytest tests/ -v
+```
+
 ## Typical Workflow
 
 ```
 1. Rip DVDs/Blu-rays     →  process-dvds.ps1 (MakeMKV automation)
-2. Identify & rename      →  Media Renamer (coming soon)
-3. Move to Plex library   →  (handled by Media Renamer staging)
+2. Identify & rename      →  rename-media.ps1 (Media Renamer)
+3. Move to Plex library   →  (handled automatically by step 2)
+```
+
+### Media Renamer Example
+
+```powershell
+# Dry-run (preview only — no files moved)
+.\rename-media.ps1 --source D:\Video\processed --dest \\server\videos --dry-run
+
+# Live run
+.\rename-media.ps1 --source D:\Video\processed --dest \\server\videos
+```
+
+The tool will scan each disc folder, identify the content via TMDb, match
+episodes by duration, and present an interactive confirmation before moving:
+
+```
+┌─ GILMORE_GIRLS_S1_US_D1 ──────────────────────────────────────────────┐
+│  Identified: Gilmore Girls (2000) — Season 1                          │
+│  TMDb: 4586 · TVDB: 76568                                            │
+│                                                                       │
+│  Episodes:                                                            │
+│    s01e01 — Pilot                            44.2 min  ✓ HIGH         │
+│    s01e02 — The Lorelais' First Day …        43.2 min  ✓ HIGH         │
+│    s01e03 — Kill Me Now                      44.0 min  ✓ HIGH         │
+│    s01e04 — The Deer Hunters                 44.5 min  ✓ HIGH         │
+│  Skipped: 1 Play-All · 1 Bonus                                       │
+└───────────────────────────────────────────────────────────────────────┘
+  [Confirm]  [Edit]  [Skip]
+```
+
+Output structure:
+```
+TV Shows/Gilmore Girls (2000) {tvdb-76568}/
+  Season 01/
+    Gilmore Girls (2000) - s01e01 - Pilot.mkv
+    Gilmore Girls (2000) - s01e02 - The Lorelais' First Day at Chilton.mkv
+    ...
+Movies/The Matrix (1999) {imdb-tt0133093}/
+  The Matrix (1999) {imdb-tt0133093}.mkv
 ```
 
 ## Plex Naming Conventions
