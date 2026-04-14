@@ -147,6 +147,15 @@ def move_file(source: Path, dest: Path, dry_run: bool = False) -> FileAction:
 
         dest.parent.mkdir(parents=True, exist_ok=True)
 
+        if dest.exists():
+            logger.warning("Destination already exists, skipping: %s", dest)
+            return FileAction(
+                source_path=source,
+                dest_path=dest,
+                action=ActionTaken.ERROR,
+                description=f"Destination already exists: {dest}",
+            )
+
         # Use shutil.move for cross-device compatibility
         shutil.move(str(source), str(dest))
 
@@ -232,8 +241,14 @@ def execute_movie_moves(
         action = move_file(main_file.path, dest_path, dry_run=dry_run)
         result.file_actions.append(action)
 
-    # Move extras
+    # Move extras — auto-increment past any existing featurette files
     extra_idx = 1
+    if not dry_run:
+        movie_dir = build_movie_dest(dest_root, movie).parent
+        year_str = f" ({movie.year})" if movie.year else ""
+        while (movie_dir / f"{sanitize_filename(f'{movie.title}{year_str}')} - featurette-{extra_idx}.mkv").exists():
+            extra_idx += 1
+
     for ex in extras:
         if ex.classification == FileClassification.PLAY_ALL:
             result.file_actions.append(FileAction(

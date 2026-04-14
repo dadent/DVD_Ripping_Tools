@@ -15,6 +15,7 @@ from media_renamer.config import AppConfig, load_config
 from media_renamer.identifier import TMDbClient, classify_content_type
 from media_renamer.matcher import (
     compute_disc_episode_offset,
+    estimate_episodes_per_disc,
     match_episodes_by_duration,
     match_movie,
     reclassify_unmatched,
@@ -198,6 +199,7 @@ def _process_tv_folder(
     stats: SessionStats,
     interp: FolderInterpretation,
     all_results: list,
+    season_disc_count: int = 1,
 ) -> None:
     """Process a single TV disc folder: match, display, confirm, move."""
     season_num = show.season_number or interp.season or 1
@@ -212,9 +214,9 @@ def _process_tv_folder(
     classified = classify_disc_files(disc, cfg)
     sorted_files = sorted(classified.files, key=lambda f: f.filename)
 
-    # Compute episode offset
+    # Compute episode offset using season-level disc count
     disc_num = interp.disc or _parse_disc_number(disc.name)
-    eps_per_disc = len([f for f in sorted_files if f.classification == FileClassification.EPISODE])
+    eps_per_disc = estimate_episodes_per_disc(len(episodes), season_disc_count)
     offset = compute_disc_episode_offset(disc_num, eps_per_disc, len(episodes))
 
     # Match episodes by duration
@@ -299,8 +301,39 @@ def _process_tv_folder(
             break
 
         elif action == UserAction.EDIT:
+            old_show = show
             show = prompt_edit_tv_show(show)
-            matched = prompt_select_episodes_to_edit(matched)
+
+            # If the show or season changed, refetch episodes and rematch
+            if (show.tmdb_id != old_show.tmdb_id
+                    or show.season_number != old_show.season_number):
+                new_season = show.season_number or 1
+                new_episodes = tmdb.get_season_episodes(show.tmdb_id, new_season)
+                if new_episodes:
+                    episodes = new_episodes
+                    new_eps_per_disc = estimate_episodes_per_disc(len(episodes), season_disc_count)
+                    new_offset = compute_disc_episode_offset(disc_num, new_eps_per_disc, len(episodes))
+                    matched, unmatched_files = match_episodes_by_duration(
+                        sorted_files, episodes, cfg, episode_offset=new_offset,
+                    )
+                    matched_names = {m.file.filename for m in matched}
+                    reclassified = reclassify_unmatched(sorted_files, matched_names, cfg)
+                    skipped = [
+                        f for f in reclassified
+                        if f.classification in (FileClassification.PLAY_ALL, FileClassification.BONUS)
+                        and f.filename not in matched_names
+                    ]
+                    unknown = [
+                        f for f in reclassified
+                        if f.classification == FileClassification.UNKNOWN
+                        and f.filename not in matched_names
+                    ]
+                else:
+                    console.print(f"  [red]Could not fetch episodes for new season {new_season} — reverting edit[/red]")
+                    show = old_show
+            else:
+                matched = prompt_select_episodes_to_edit(matched)
+
             display_tv_match(disc.name, show, matched, unknown, skipped, dry_run=cfg.dry_run)
             paths = [(em.file.filename, _tv_episode_path(show, em)) for em in matched]
             if paths:
@@ -487,13 +520,26 @@ def main(
     stats = SessionStats()
     all_results: list[ProcessingResult] = []
 
+    # Pre-interpret all folder names to compute disc counts per series+season
+    interpretations: list[FolderInterpretation] = []
     for disc in discs:
-        # 1. Interpret folder name
         interp = _interpret_folder(disc.name, llm)
+        interpretations.append(interp)
         console.print(f"  [dim]Interpreted: \"{interp.title}\" type={interp.content_type} "
                        f"season={interp.season} disc={interp.disc} "
                        f"(confidence={interp.confidence})[/dim]")
 
+    # Count discs per (title, season) to compute proper episode offsets.
+    # Include ALL folders with disc numbers — content type may be resolved
+    # later by heuristic or user choice, not just by LLM label.
+    from collections import Counter
+    season_disc_counts: Counter[tuple[str, int]] = Counter()
+    for interp in interpretations:
+        season = interp.season or 1
+        key = (interp.title.lower().strip(), season)
+        season_disc_counts[key] += 1
+
+    for disc, interp in zip(discs, interpretations):
         # 2. Classify files to determine content type heuristic
         classified = classify_disc_files(disc, cfg)
         content_type = classify_content_type(classified, cfg)
@@ -505,11 +551,14 @@ def main(
             content_type = ContentType.MOVIE
 
         # 3. Search TMDb and process based on content type
+        disc_count_key = (interp.title.lower().strip(), interp.season or 1)
+        sdc = season_disc_counts.get(disc_count_key, 1)
+
         try:
             if content_type == ContentType.TV_SERIES:
                 show = _search_tmdb_tv(tmdb, interp)
                 if show:
-                    _process_tv_folder(disc, show, tmdb, cfg, stats, interp, all_results)
+                    _process_tv_folder(disc, show, tmdb, cfg, stats, interp, all_results, season_disc_count=sdc)
                 else:
                     stats.folders_skipped += 1
                     console.print(f"  [dim]Skipped {disc.name} — no TMDb match.[/dim]\n")
@@ -533,7 +582,7 @@ def main(
                 if ct_choice == "TV Series":
                     show = _search_tmdb_tv(tmdb, interp)
                     if show:
-                        _process_tv_folder(disc, show, tmdb, cfg, stats, interp, all_results)
+                        _process_tv_folder(disc, show, tmdb, cfg, stats, interp, all_results, season_disc_count=sdc)
                 elif ct_choice == "Movie":
                     movie = _search_tmdb_movie(tmdb, interp)
                     if movie:

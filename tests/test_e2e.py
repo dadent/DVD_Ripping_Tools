@@ -363,6 +363,35 @@ class TestE2EProcessingLog:
 
 
 class TestE2EEdgeCases:
+    def test_two_episode_disc_not_both_play_all(self):
+        """Two similar-duration episodes must NOT both be classified as PLAY_ALL."""
+        disc = DiscFolder(
+            path=Path("D:/Video/processed/LAST_DISC"),
+            name="LAST_DISC",
+            files=[
+                _mf("ep1.mkv", 43.8),
+                _mf("ep2.mkv", 44.9),
+                _mf("bonus.mkv", 3.0),
+            ],
+        )
+        classified = classify_disc_files(disc, _cfg())
+        episodes = [f for f in classified.files if f.classification == FileClassification.EPISODE]
+        play_alls = [f for f in classified.files if f.classification == FileClassification.PLAY_ALL]
+        assert len(episodes) == 2
+        assert len(play_alls) == 0
+
+    def test_move_file_blocks_overwrite(self, tmp_path: Path):
+        """move_file should refuse to overwrite an existing file."""
+        from media_renamer.renamer import move_file
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"source content")
+        dest = tmp_path / "dest.mkv"
+        dest.write_bytes(b"existing content")
+
+        result = move_file(src, dest, dry_run=False)
+        assert result.action.value == "error"
+        assert dest.read_bytes() == b"existing content"  # original preserved
+
     def test_empty_disc_folder(self):
         disc = DiscFolder(
             path=Path("D:/Video/processed/EMPTY"),

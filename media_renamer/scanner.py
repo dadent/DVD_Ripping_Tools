@@ -208,6 +208,11 @@ def classify_disc_files(folder: DiscFolder, config: AppConfig) -> DiscFolder:
             if abs(candidate.duration_seconds - others_sum) <= play_all_tol_sec:
                 play_all_indices.add(i)
 
+    # Guard: if ALL candidates are marked Play All, none of them actually are.
+    # A true Play All is ONE concatenated track, not every track.
+    if play_all_indices and play_all_indices == set(range(len(candidates))):
+        play_all_indices.clear()
+
     # --- Step 3: assign final classifications ---
     episode_candidates: list[MediaFile] = []
     for i, candidate in enumerate(candidates):
