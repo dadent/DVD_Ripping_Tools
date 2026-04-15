@@ -13,6 +13,7 @@ from rich.console import Console
 from media_renamer import __version__
 from media_renamer.config import AppConfig, load_config
 from media_renamer.identifier import TMDbClient, classify_content_type
+from media_renamer.grouper import DiscGroup, group_tv_discs
 from media_renamer.matcher import (
     compute_disc_episode_offset,
     estimate_episodes_per_disc,
@@ -45,11 +46,14 @@ from media_renamer.scanner import classify_disc_files, scan_source_directory
 from media_renamer.ui import (
     SessionStats,
     UserAction,
+    display_batch_disc_result,
+    display_batch_group_summary,
     display_movie_match,
     display_output_paths,
     display_scan_summary,
     display_session_summary,
     display_tv_match,
+    prompt_confirm_batch,
     prompt_confirm_mapping,
     prompt_edit_movie,
     prompt_edit_tv_show,
@@ -189,6 +193,134 @@ def _parse_disc_number(folder_name: str) -> int:
     if m:
         return int(m.group(1) or m.group(2))
     return 1
+
+
+# ---------------------------------------------------------------------------
+# Batch TV processing (Phase 9)
+# ---------------------------------------------------------------------------
+
+def _process_tv_batch(
+    group: DiscGroup,
+    tmdb: TMDbClient,
+    cfg: AppConfig,
+    stats: SessionStats,
+    all_results: list,
+) -> None:
+    """Process an entire TV disc group: single TMDb lookup, cascading offsets.
+
+    1. Search TMDb once for the group
+    2. Confirm with user once
+    3. Process each disc sequentially — disc N starts at the offset
+       where disc N-1 left off
+    4. Display per-disc results (read-only, no prompts)
+    """
+    # Search TMDb once using the group's title + season
+    interp_for_search = group.sorted_discs()[0][1]
+    show = _search_tmdb_tv(tmdb, interp_for_search)
+    if not show:
+        stats.folders_skipped += group.disc_count
+        console.print(f"  [dim]Skipped group \"{group.title}\" S{group.season:02d} — no TMDb match.[/dim]\n")
+        return
+
+    season_num = show.season_number or group.season
+    episodes = tmdb.get_season_episodes(show.tmdb_id, season_num)
+    if not episodes:
+        console.print(f"  [red]Could not fetch episodes for {show.title} season {season_num}[/red]")
+        stats.errors.append(f"{group.title} S{group.season}: no episodes")
+        return
+
+    console.print(f"\n  [bold]{show.title} ({show.year}) — Season {season_num}[/bold]")
+    console.print(f"  [dim]{len(episodes)} episode(s) across {group.disc_count} disc(s)[/dim]\n")
+
+    # Confirm batch processing
+    action = prompt_confirm_batch(show.title, season_num, group.disc_count)
+    if action == UserAction.SKIP:
+        stats.folders_skipped += group.disc_count
+        console.print("  [dim]⏭️  Skipped group.[/dim]\n")
+        return
+
+    # Process each disc with cascading offsets
+    next_offset = 0
+    for disc, interp in group.sorted_discs():
+        try:
+            matched_count, extras_count, skipped_count, error_count = _process_tv_disc_batch(
+                disc, show, episodes, cfg, stats, all_results,
+                episode_offset=next_offset,
+            )
+            # Cascade: next disc starts where this one left off
+            next_offset += matched_count
+
+            display_batch_disc_result(
+                disc.name, matched_count, skipped_count, extras_count,
+                error_count=error_count, dry_run=cfg.dry_run,
+            )
+        except Exception as e:
+            logger.exception("Error processing %s in batch", disc.name)
+            stats.errors.append(f"{disc.name}: {e}")
+            console.print(f"  [red]❌ {disc.name}: {e}[/red]")
+
+    if cfg.dry_run:
+        console.print(f"\n  [bold yellow]📋 DRY RUN — nothing moved for this group.[/bold yellow]\n")
+    else:
+        console.print()
+
+
+def _process_tv_disc_batch(
+    disc: DiscFolder,
+    show: TVShowMatch,
+    episodes: list,
+    cfg: AppConfig,
+    stats: SessionStats,
+    all_results: list,
+    episode_offset: int = 0,
+) -> tuple[int, int, int, int]:
+    """Process a single TV disc in batch mode (non-interactive).
+
+    Returns (matched_count, extras_count, skipped_count, error_count).
+    """
+    classified = classify_disc_files(disc, cfg)
+    sorted_files = sorted(classified.files, key=lambda f: f.filename)
+
+    matched, _ = match_episodes_by_duration(
+        sorted_files, episodes, cfg, episode_offset=episode_offset,
+    )
+
+    matched_names = {m.file.filename for m in matched}
+    reclassified = reclassify_unmatched(sorted_files, matched_names, cfg)
+
+    play_all_files = [
+        f for f in reclassified
+        if f.classification == FileClassification.PLAY_ALL
+        and f.filename not in matched_names
+    ]
+    bonus_files = [
+        f for f in reclassified
+        if f.classification == FileClassification.BONUS
+        and f.filename not in matched_names
+    ]
+
+    result = execute_tv_moves(
+        dest_root=cfg.dest_dir,
+        show=show,
+        matched=matched,
+        extras=bonus_files,
+        skipped=play_all_files,
+        dry_run=cfg.dry_run,
+    )
+    all_results.append(result)
+
+    stats.episodes_matched += len(matched)
+    stats.play_all_skipped += len(play_all_files)
+    stats.extras_found += len(bonus_files)
+    stats.files_moved += result.moved_count
+    stats.folders_processed += 1
+
+    return len(matched), len(bonus_files), len(play_all_files), result.error_count
+
+
+# ---------------------------------------------------------------------------
+# Per-folder interactive processing (existing)
+# ---------------------------------------------------------------------------
 
 
 def _process_tv_folder(
@@ -461,6 +593,13 @@ def main(
             is_eager=True,
         ),
     ] = False,
+    no_batch: Annotated[
+        bool,
+        typer.Option(
+            "--no-batch",
+            help="Disable auto-grouping of TV disc folders (process each folder individually).",
+        ),
+    ] = False,
 ) -> None:
     """Scan MakeMKV output, identify content, and rename into Plex format."""
     if version:
@@ -520,7 +659,7 @@ def main(
     stats = SessionStats()
     all_results: list[ProcessingResult] = []
 
-    # Pre-interpret all folder names to compute disc counts per series+season
+    # Pre-interpret all folder names
     interpretations: list[FolderInterpretation] = []
     for disc in discs:
         interp = _interpret_folder(disc.name, llm)
@@ -529,17 +668,38 @@ def main(
                        f"season={interp.season} disc={interp.disc} "
                        f"(confidence={interp.confidence})[/dim]")
 
-    # Count discs per (title, season) to compute proper episode offsets.
-    # Include ALL folders with disc numbers — content type may be resolved
-    # later by heuristic or user choice, not just by LLM label.
+    # ── Batch grouping ──
+    if not no_batch:
+        groups, ungrouped = group_tv_discs(discs, interpretations)
+    else:
+        groups = []
+        ungrouped = list(zip(discs, interpretations))
+
+    if groups:
+        display_batch_group_summary(groups, ungrouped)
+
+    # Process grouped TV discs (batch mode — single confirm per group)
+    for group in groups:
+        try:
+            _process_tv_batch(group, tmdb, cfg, stats, all_results)
+        except KeyboardInterrupt:
+            console.print("\n[bold red]Interrupted by user.[/bold red]")
+            break
+        except Exception as e:
+            logger.exception("Error processing group %s S%d", group.title, group.season)
+            stats.errors.append(f"{group.title} S{group.season}: {e}")
+            console.print(f"  [bold red]Error: {e}[/bold red]\n")
+
+    # Process ungrouped folders individually (existing interactive flow)
+    # Compute disc counts for ungrouped TV folders (fallback offset estimation)
     from collections import Counter
     season_disc_counts: Counter[tuple[str, int]] = Counter()
-    for interp in interpretations:
+    for _, interp in ungrouped:
         season = interp.season or 1
         key = (interp.title.lower().strip(), season)
         season_disc_counts[key] += 1
 
-    for disc, interp in zip(discs, interpretations):
+    for disc, interp in ungrouped:
         # 2. Classify files to determine content type heuristic
         classified = classify_disc_files(disc, cfg)
         content_type = classify_content_type(classified, cfg)

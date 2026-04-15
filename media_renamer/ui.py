@@ -480,3 +480,88 @@ def display_session_summary(stats: SessionStats, dry_run: bool = False) -> None:
 
     console.print("\n".join(lines))
     console.print()
+
+
+# ---------------------------------------------------------------------------
+# Batch mode UI
+# ---------------------------------------------------------------------------
+
+def display_batch_group_summary(
+    groups: list,
+    ungrouped: list,
+) -> None:
+    """Display a summary of auto-detected disc groups and ungrouped folders.
+
+    *groups* is a list of DiscGroup objects; *ungrouped* is a list of
+    (DiscFolder, FolderInterpretation) tuples.
+    """
+    if not groups and not ungrouped:
+        return
+
+    console.print("\n[bold]📦 Batch Grouping Results[/bold]\n")
+
+    if groups:
+        table = Table(show_header=True, header_style="bold cyan", expand=False)
+        table.add_column("#", width=3)
+        table.add_column("Show")
+        table.add_column("Season", justify="center")
+        table.add_column("Discs", justify="center")
+        table.add_column("Folders")
+
+        for i, grp in enumerate(groups, 1):
+            folder_names = ", ".join(d.name for d, _ in grp.sorted_discs())
+            table.add_row(
+                str(i),
+                grp.title,
+                f"S{grp.season:02d}",
+                str(grp.disc_count),
+                folder_names,
+            )
+        console.print(table)
+
+    if ungrouped:
+        console.print(f"\n  [dim]+ {len(ungrouped)} ungrouped folder(s) "
+                       f"(will process individually)[/dim]")
+        for disc, interp in ungrouped:
+            console.print(f"    [dim]• {disc.name} ({interp.content_type or 'unknown'})[/dim]")
+
+    console.print()
+
+
+def display_batch_disc_result(
+    disc_name: str,
+    matched_count: int,
+    skipped_count: int,
+    extras_count: int,
+    error_count: int = 0,
+    dry_run: bool = False,
+) -> None:
+    """Display a compact one-line result for a disc processed in batch mode."""
+    parts = [f"  {'📋' if dry_run else '✅'} [bold]{disc_name}[/bold]"]
+    parts.append(f"  {matched_count} episode(s)")
+    if skipped_count:
+        parts.append(f"  {skipped_count} skipped")
+    if extras_count:
+        parts.append(f"  {extras_count} extra(s)")
+    if error_count:
+        parts.append(f"  [red]{error_count} error(s)[/red]")
+    console.print(" —".join(parts))
+
+
+def prompt_confirm_batch(group_title: str, season: int, disc_count: int) -> UserAction:
+    """Prompt user to confirm processing an entire TV disc group.
+
+    Returns UserAction.CONFIRM, EDIT, or SKIP.
+    """
+    result = questionary.select(
+        f"Process all {disc_count} discs of {group_title} Season {season}?",
+        choices=[
+            questionary.Choice("✅ Confirm — process all discs", value="confirm"),
+            questionary.Choice("⏭️  Skip this group", value="skip"),
+        ],
+        style=_STYLE,
+    ).ask()
+
+    if result == "confirm":
+        return UserAction.CONFIRM
+    return UserAction.SKIP
