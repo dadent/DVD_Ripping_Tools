@@ -141,10 +141,43 @@ pytest tests/ -v
 
 # Live run
 .\rename-media.ps1 --source D:\Video\processed --dest \\server\videos
+
+# Disable auto-grouping (process each disc individually)
+.\rename-media.ps1 --source D:\Video\processed --dest \\server\videos --no-batch
 ```
 
-The tool will scan each disc folder, identify the content via TMDb, match
-episodes by duration, and present an interactive confirmation before moving:
+#### Batch Mode (default)
+
+When multiple discs of the same TV show/season are detected, the tool
+auto-groups them and processes the entire batch with a single confirmation.
+Each disc's episodes cascade from where the previous disc left off:
+
+```
+📦 Batch Grouping Results
+
+  #  Show            Season  Discs  Folders
+  1  Gilmore Girls   S01     6      GG_S1_D1, GG_S1_D2, ..., GG_S1_D6
+  2  Gilmore Girls   S02     6      GG_S2_D1, GG_S2_D2, ..., GG_S2_D6
+
+  + 1 ungrouped folder(s) (will process individually)
+
+  Gilmore Girls (2000) — Season 1
+  21 episode(s) across 6 disc(s)
+
+? Process all 6 discs of Gilmore Girls Season 1? ✅ Confirm
+
+  ✅ GG_S1_D1 — 4 episode(s) — 1 skipped — 1 extra(s)
+  ✅ GG_S1_D2 — 4 episode(s) — 1 skipped
+  ✅ GG_S1_D3 — 4 episode(s) — 1 skipped
+  ✅ GG_S1_D4 — 4 episode(s) — 1 skipped
+  ✅ GG_S1_D5 — 4 episode(s) — 1 skipped
+  ✅ GG_S1_D6 — 1 episode(s) — 1 skipped
+```
+
+#### Single Disc / Movie (interactive)
+
+Standalone discs and movies use the interactive per-folder flow with
+confirmation before each move:
 
 ```
 ┌─ GILMORE_GIRLS_S1_US_D1 ──────────────────────────────────────────────┐

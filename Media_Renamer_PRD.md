@@ -505,3 +505,37 @@ This plan breaks the MVP into phases that can be implemented and tested incremen
 - Error handling and graceful degradation throughout the pipeline
 - Update README.md with final usage instructions and examples
 - Final manual validation: process sample discs and verify Plex accepts the output
+
+### Phase 9: TV Series Batch Mode
+**Goal:** Optimize the common workflow of processing multiple discs from the same TV series.
+
+When ripping a full TV season (or multiple seasons), all disc folders land in the source directory together. Instead of requiring the user to identify the same show for each disc, the tool auto-groups related folders and processes them as a batch.
+
+**Auto-Grouping:**
+- After interpreting all folder names, group TV folders by normalized title + season number
+- Title normalization: lowercase, strip whitespace, remove region suffixes (US/UK/AU)
+- Groups require 2+ discs; single TV discs fall back to interactive per-folder processing
+- Movies and unrecognized folders are always processed individually
+
+**Cascading Episode Offsets:**
+- Instead of estimating `episodes_per_disc` from season totals, each disc starts where the previous disc left off
+- Disc 1 starts at offset 0, matches episodes 1–4 → next offset = 4
+- Disc 2 starts at offset 4, matches episodes 5–8 → next offset = 8
+- This eliminates estimation errors on uneven disc layouts (e.g., last disc with 1–2 episodes)
+
+**Batch UI Flow:**
+1. Display summary table showing all detected groups (show, season, disc count, folder names)
+2. For each group: single TMDb search → single confirmation prompt
+3. Process each disc sequentially — display compact per-disc results (read-only, no prompts)
+4. Ungrouped folders process via existing interactive per-folder flow
+
+**CLI Flag:**
+- `--no-batch` disables auto-grouping (all folders processed individually)
+- Batch mode is enabled by default
+
+**Implementation:**
+- New `media_renamer/grouper.py` module: `DiscGroup` dataclass, `group_tv_discs()` function
+- Extended `media_renamer/ui.py`: batch summary, per-disc progress, batch confirm prompt
+- Modified `media_renamer/cli.py`: grouping integration, cascading offset logic, `--no-batch` flag
+- New `tests/test_grouper.py` with 14 unit tests
+- Extended `tests/test_e2e.py` with cascading offset integration tests

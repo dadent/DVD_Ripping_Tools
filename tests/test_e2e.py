@@ -435,3 +435,84 @@ class TestE2EEdgeCases:
         assert sanitize_filename("") == "untitled"
         assert sanitize_filename("   ") == "untitled"
         assert sanitize_filename("...") == "untitled"
+
+
+# ---------------------------------------------------------------------------
+# E2E: Batch mode — cascading offsets
+# ---------------------------------------------------------------------------
+
+
+class TestE2EBatchCascadingOffsets:
+    """Verify cascading offsets across a multi-disc batch."""
+
+    # 21 episodes for S1
+    S1_EPISODES = [
+        EpisodeInfo(season_number=1, episode_number=i+1, title=f"Episode {i+1}", runtime_minutes=43)
+        for i in range(21)
+    ]
+
+    def _build_disc(self, disc_num: int, ep_count: int) -> DiscFolder:
+        files = [
+            _mf(f"D{disc_num}-{chr(66+i)}_t{i:02d}.mkv", 43.0 + i * 0.3)
+            for i in range(ep_count)
+        ]
+        # Add a Play All and a bonus
+        files.append(_mf(f"D{disc_num}-PlayAll.mkv", ep_count * 43.5))
+        files.append(_mf(f"D{disc_num}-Bonus.mkv", 3.0))
+        return DiscFolder(
+            path=Path(f"D:/Video/processed/GG_S1_D{disc_num}"),
+            name=f"GG_S1_D{disc_num}",
+            files=files,
+        )
+
+    def test_cascading_offsets_6_discs(self):
+        """Process 6 discs (4+4+4+4+4+1) with cascading offsets."""
+        from media_renamer.scanner import classify_disc_files
+
+        disc_layout = [4, 4, 4, 4, 4, 1]  # episodes per disc
+        expected_offset = 0
+
+        for disc_num, ep_count in enumerate(disc_layout, 1):
+            disc = self._build_disc(disc_num, ep_count)
+            classified = classify_disc_files(disc, _cfg())
+            sorted_files = sorted(classified.files, key=lambda f: f.filename)
+
+            matched, _ = match_episodes_by_duration(
+                sorted_files, self.S1_EPISODES, _cfg(),
+                episode_offset=expected_offset,
+            )
+
+            assert len(matched) == ep_count, f"Disc {disc_num}: expected {ep_count}, got {len(matched)}"
+
+            # Verify correct episode numbers
+            for j, em in enumerate(matched):
+                assert em.episode.episode_number == expected_offset + j + 1
+
+            # Cascade offset for next disc
+            expected_offset += len(matched)
+
+        assert expected_offset == 21  # all episodes accounted for
+
+    def test_cascading_handles_uneven_last_disc(self):
+        """Last disc with 2 episodes (not 4) should work correctly."""
+        from media_renamer.scanner import classify_disc_files
+
+        # S2: 22 episodes across 6 discs (4+4+4+4+4+2)
+        s2_episodes = [
+            EpisodeInfo(season_number=2, episode_number=i+1, title=f"S2 Episode {i+1}", runtime_minutes=43)
+            for i in range(22)
+        ]
+
+        # Process last disc (disc 6) at offset 20
+        disc = self._build_disc(6, 2)
+        classified = classify_disc_files(disc, _cfg())
+        sorted_files = sorted(classified.files, key=lambda f: f.filename)
+
+        matched, _ = match_episodes_by_duration(
+            sorted_files, s2_episodes, _cfg(), episode_offset=20,
+        )
+
+        assert len(matched) == 2
+        assert matched[0].episode.episode_number == 21
+        assert matched[1].episode.episode_number == 22
+
