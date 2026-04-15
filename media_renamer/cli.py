@@ -679,11 +679,13 @@ def main(
         display_batch_group_summary(groups, ungrouped)
 
     # Process grouped TV discs (batch mode — single confirm per group)
+    interrupted = False
     for group in groups:
         try:
             _process_tv_batch(group, tmdb, cfg, stats, all_results)
         except KeyboardInterrupt:
             console.print("\n[bold red]Interrupted by user.[/bold red]")
+            interrupted = True
             break
         except Exception as e:
             logger.exception("Error processing group %s S%d", group.title, group.season)
@@ -691,73 +693,70 @@ def main(
             console.print(f"  [bold red]Error: {e}[/bold red]\n")
 
     # Process ungrouped folders individually (existing interactive flow)
-    # Compute disc counts for ungrouped TV folders (fallback offset estimation)
-    from collections import Counter
-    season_disc_counts: Counter[tuple[str, int]] = Counter()
-    for _, interp in ungrouped:
-        season = interp.season or 1
-        key = (interp.title.lower().strip(), season)
-        season_disc_counts[key] += 1
+    if not interrupted:
+        # Compute disc counts for ungrouped TV folders (fallback offset estimation)
+        from collections import Counter
+        season_disc_counts: Counter[tuple[str, int]] = Counter()
+        for _, interp in ungrouped:
+            season = interp.season or 1
+            key = (interp.title.lower().strip(), season)
+            season_disc_counts[key] += 1
 
-    for disc, interp in ungrouped:
-        # 2. Classify files to determine content type heuristic
-        classified = classify_disc_files(disc, cfg)
-        content_type = classify_content_type(classified, cfg)
+        for disc, interp in ungrouped:
+            classified = classify_disc_files(disc, cfg)
+            content_type = classify_content_type(classified, cfg)
 
-        # Use LLM's content type if available and confident
-        if interp.content_type == "tv":
-            content_type = ContentType.TV_SERIES
-        elif interp.content_type == "movie":
-            content_type = ContentType.MOVIE
+            if interp.content_type == "tv":
+                content_type = ContentType.TV_SERIES
+            elif interp.content_type == "movie":
+                content_type = ContentType.MOVIE
 
-        # 3. Search TMDb and process based on content type
-        disc_count_key = (interp.title.lower().strip(), interp.season or 1)
-        sdc = season_disc_counts.get(disc_count_key, 1)
+            disc_count_key = (interp.title.lower().strip(), interp.season or 1)
+            sdc = season_disc_counts.get(disc_count_key, 1)
 
-        try:
-            if content_type == ContentType.TV_SERIES:
-                show = _search_tmdb_tv(tmdb, interp)
-                if show:
-                    _process_tv_folder(disc, show, tmdb, cfg, stats, interp, all_results, season_disc_count=sdc)
-                else:
-                    stats.folders_skipped += 1
-                    console.print(f"  [dim]Skipped {disc.name} — no TMDb match.[/dim]\n")
-
-            elif content_type == ContentType.MOVIE:
-                movie = _search_tmdb_movie(tmdb, interp)
-                if movie:
-                    _process_movie_folder(disc, movie, cfg, stats, all_results)
-                else:
-                    stats.folders_skipped += 1
-                    console.print(f"  [dim]Skipped {disc.name} — no TMDb match.[/dim]\n")
-
-            else:
-                # Unknown content type — ask user
-                console.print(f"\n  [yellow]Could not determine content type for: {disc.name}[/yellow]")
-                import questionary
-                ct_choice = questionary.select(
-                    "What type of content is this?",
-                    choices=["TV Series", "Movie", "Skip"],
-                ).ask()
-                if ct_choice == "TV Series":
+            try:
+                if content_type == ContentType.TV_SERIES:
                     show = _search_tmdb_tv(tmdb, interp)
                     if show:
                         _process_tv_folder(disc, show, tmdb, cfg, stats, interp, all_results, season_disc_count=sdc)
-                elif ct_choice == "Movie":
+                    else:
+                        stats.folders_skipped += 1
+                        console.print(f"  [dim]Skipped {disc.name} — no TMDb match.[/dim]\n")
+
+                elif content_type == ContentType.MOVIE:
                     movie = _search_tmdb_movie(tmdb, interp)
                     if movie:
                         _process_movie_folder(disc, movie, cfg, stats, all_results)
-                else:
-                    stats.folders_skipped += 1
-                    console.print(f"  [dim]Skipped {disc.name}.[/dim]\n")
+                    else:
+                        stats.folders_skipped += 1
+                        console.print(f"  [dim]Skipped {disc.name} — no TMDb match.[/dim]\n")
 
-        except KeyboardInterrupt:
-            console.print("\n[bold red]Interrupted by user.[/bold red]")
-            break
-        except Exception as e:
-            logger.exception("Error processing %s", disc.name)
-            stats.errors.append(f"{disc.name}: {e}")
-            console.print(f"  [bold red]Error: {e}[/bold red]\n")
+                else:
+                    console.print(f"\n  [yellow]Could not determine content type for: {disc.name}[/yellow]")
+                    import questionary
+                    ct_choice = questionary.select(
+                        "What type of content is this?",
+                        choices=["TV Series", "Movie", "Skip"],
+                    ).ask()
+                    if ct_choice == "TV Series":
+                        show = _search_tmdb_tv(tmdb, interp)
+                        if show:
+                            _process_tv_folder(disc, show, tmdb, cfg, stats, interp, all_results, season_disc_count=sdc)
+                    elif ct_choice == "Movie":
+                        movie = _search_tmdb_movie(tmdb, interp)
+                        if movie:
+                            _process_movie_folder(disc, movie, cfg, stats, all_results)
+                    else:
+                        stats.folders_skipped += 1
+                        console.print(f"  [dim]Skipped {disc.name}.[/dim]\n")
+
+            except KeyboardInterrupt:
+                console.print("\n[bold red]Interrupted by user.[/bold red]")
+                break
+            except Exception as e:
+                logger.exception("Error processing %s", disc.name)
+                stats.errors.append(f"{disc.name}: {e}")
+                console.print(f"  [bold red]Error: {e}[/bold red]\n")
 
     # ── Processing log ──
     if all_results and cfg.dest_dir:

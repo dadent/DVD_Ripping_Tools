@@ -33,14 +33,11 @@ class DiscGroup:
 def _normalize_title(title: str) -> str:
     """Normalize a title for grouping comparison.
 
-    Lowercases, strips whitespace/underscores, removes common suffixes like
-    'US' so that 'GILMORE_GIRLS_S1_US_D1' and 'GILMORE_GIRLS_S2_D1' group
-    under the same show.
+    Lowercases, strips whitespace, and collapses multiple spaces.
+    Does NOT strip region tokens (US/UK/AU) — "The Office US" and
+    "The Office UK" are intentionally kept separate.
     """
     t = title.lower().strip()
-    # Remove common region/edition suffixes
-    t = re.sub(r"\b(us|uk|au)\b", "", t)
-    # Collapse whitespace
     t = re.sub(r"\s+", " ", t).strip()
     return t
 

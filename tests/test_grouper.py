@@ -39,10 +39,11 @@ class TestNormalizeTitle:
         assert _normalize_title("  GILMORE GIRLS  ") == "gilmore girls"
 
     def test_removes_us_suffix(self):
-        assert _normalize_title("GILMORE GIRLS US") == "gilmore girls"
+        # Region tokens are preserved — different shows stay separate
+        assert _normalize_title("GILMORE GIRLS US") == "gilmore girls us"
 
-    def test_removes_uk_suffix(self):
-        assert _normalize_title("DOCTOR WHO UK") == "doctor who"
+    def test_preserves_uk_suffix(self):
+        assert _normalize_title("DOCTOR WHO UK") == "doctor who uk"
 
     def test_collapses_whitespace(self):
         assert _normalize_title("THE   BIG   SHOW") == "the big show"
@@ -146,18 +147,30 @@ class TestGroupTvDiscs:
         assert len(ungrouped) == 2  # Matrix + lone Friends disc
 
     def test_title_normalization_groups_variants(self):
-        """Slightly different title variants should still group."""
-        discs = [_disc("GILMORE_GIRLS_S1_US_D1"), _disc("GILMOREGIRLS_S1_D2")]
+        """Same title (case-insensitive) should still group."""
+        discs = [_disc("GILMORE_GIRLS_S1_D1"), _disc("GILMOREGIRLS_S1_D2")]
         interps = [
-            _interp("Gilmore Girls US", season=1, disc=1),
+            _interp("Gilmore Girls", season=1, disc=1),
             _interp("Gilmore Girls", season=1, disc=2),
         ]
 
         groups, ungrouped = group_tv_discs(discs, interps)
 
-        # Both normalize to "gilmore girls" — should group
         assert len(groups) == 1
         assert groups[0].disc_count == 2
+
+    def test_region_variants_stay_separate(self):
+        """'The Office US' and 'The Office UK' must NOT group together."""
+        discs = [_disc("OFFICE_US_D1"), _disc("OFFICE_UK_D1")]
+        interps = [
+            _interp("The Office US", season=1, disc=1),
+            _interp("The Office UK", season=1, disc=1),
+        ]
+
+        groups, ungrouped = group_tv_discs(discs, interps)
+
+        assert len(groups) == 0  # neither has 2+ discs
+        assert len(ungrouped) == 2
 
     def test_no_season_defaults_to_1(self):
         """Folders without explicit season default to season 1."""
