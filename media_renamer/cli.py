@@ -243,12 +243,12 @@ def _process_tv_batch(
     next_offset = 0
     for disc, interp in group.sorted_discs():
         try:
-            matched_count, extras_count, skipped_count, error_count = _process_tv_disc_batch(
+            matched_count, extras_count, skipped_count, error_count, episode_slots = _process_tv_disc_batch(
                 disc, show, episodes, cfg, stats, all_results,
                 episode_offset=next_offset,
             )
-            # Cascade: next disc starts where this one left off
-            next_offset += matched_count
+            # Cascade: next disc starts after all episode slots on this disc
+            next_offset += episode_slots
 
             display_batch_disc_result(
                 disc.name, matched_count, skipped_count, extras_count,
@@ -273,10 +273,13 @@ def _process_tv_disc_batch(
     stats: SessionStats,
     all_results: list,
     episode_offset: int = 0,
-) -> tuple[int, int, int, int]:
+) -> tuple[int, int, int, int, int]:
     """Process a single TV disc in batch mode (non-interactive).
 
-    Returns (matched_count, extras_count, skipped_count, error_count).
+    Returns (matched_count, extras_count, skipped_count, error_count, episode_slots).
+    episode_slots = matched + unmatched episode-length files (UNKNOWN after
+    reclassification), used for cascading offset so the next disc doesn't
+    re-assign episodes that were on this disc.
     """
     classified = classify_disc_files(disc, cfg)
     sorted_files = sorted(classified.files, key=lambda f: f.filename)
@@ -298,6 +301,21 @@ def _process_tv_disc_batch(
         if f.classification == FileClassification.BONUS
         and f.filename not in matched_names
     ]
+    # Episode-length files that failed duration matching — likely real episodes
+    # with unusual duration.  Count them toward the cascading offset so subsequent
+    # discs don't try to re-match these episode slots.
+    unknown_files = [
+        f for f in reclassified
+        if f.classification == FileClassification.UNKNOWN
+        and f.filename not in matched_names
+    ]
+    if unknown_files:
+        logger.warning(
+            "%s: %d episode-length file(s) did not match by duration — "
+            "advancing offset to prevent cascade error",
+            disc.name,
+            len(unknown_files),
+        )
 
     result = execute_tv_moves(
         dest_root=cfg.dest_dir,
@@ -315,7 +333,8 @@ def _process_tv_disc_batch(
     stats.files_moved += result.moved_count
     stats.folders_processed += 1
 
-    return len(matched), len(bonus_files), len(play_all_files), result.error_count
+    episode_slots = len(matched) + len(unknown_files)
+    return len(matched), len(bonus_files), len(play_all_files), result.error_count, episode_slots
 
 
 # ---------------------------------------------------------------------------

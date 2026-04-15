@@ -516,3 +516,58 @@ class TestE2EBatchCascadingOffsets:
         assert matched[0].episode.episode_number == 21
         assert matched[1].episode.episode_number == 22
 
+    def test_unmatched_episode_length_files_advance_offset(self):
+        """Files that are episode-length but fail duration matching should
+        still count toward the cascading offset so subsequent discs don't
+        re-assign those episode slots.
+        """
+        # Disc 1: 3 normal files + 1 file with wildly different duration
+        files = [
+            _mf("D1-B_t00.mkv", 43.0),   # matches ep1
+            _mf("D1-C_t01.mkv", 43.2),   # matches ep2
+            _mf("D1-D_t02.mkv", 43.1),   # matches ep3
+            _mf("D1-E_t03.mkv", 60.0),   # ep4? duration way off → unmatched
+        ]
+        disc = DiscFolder(
+            path=Path("D:/Video/processed/TEST_D1"),
+            name="TEST_D1",
+            files=files,
+        )
+
+        episodes = [
+            EpisodeInfo(season_number=1, episode_number=i+1, title=f"Ep {i+1}", runtime_minutes=43)
+            for i in range(8)
+        ]
+
+        cfg = _cfg()
+        from media_renamer.scanner import classify_disc_files
+        classified = classify_disc_files(disc, cfg)
+        sorted_files = sorted(classified.files, key=lambda f: f.filename)
+
+        matched, unmatched = match_episodes_by_duration(
+            sorted_files, episodes, cfg, episode_offset=0,
+        )
+
+        matched_names = {m.file.filename for m in matched}
+        reclassified = reclassify_unmatched(sorted_files, matched_names, cfg)
+
+        # The 60-min file should be reclassified as UNKNOWN (episode-length but unmatched)
+        unknown_files = [
+            f for f in reclassified
+            if f.classification == FileClassification.UNKNOWN
+            and f.filename not in matched_names
+        ]
+
+        assert len(matched) == 3
+        assert len(unknown_files) == 1, "60-min unmatched file should be UNKNOWN, not BONUS"
+
+        # episode_slots includes both matched + unknown
+        episode_slots = len(matched) + len(unknown_files)
+        assert episode_slots == 4
+
+        # Disc 2 should start at offset 4, matching ep5
+        matched2, _ = match_episodes_by_duration(
+            sorted_files[:3], episodes, cfg, episode_offset=episode_slots,
+        )
+        assert matched2[0].episode.episode_number == 5
+
