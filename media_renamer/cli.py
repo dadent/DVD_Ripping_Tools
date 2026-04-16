@@ -240,8 +240,33 @@ def _process_tv_batch(
         return
 
     # Process each disc with cascading offsets
+    # Detect disc number gaps (missing discs) and estimate offset adjustments
+    sorted_disc_pairs = group.sorted_discs()
+    max_disc_num = max(
+        interp.disc or _parse_disc_number(disc.name)
+        for disc, interp in sorted_disc_pairs
+    )
+    eps_per_disc_est = len(episodes) / max_disc_num if max_disc_num > 0 else len(episodes)
+
     next_offset = 0
-    for disc, interp in group.sorted_discs():
+    prev_disc_num = 0
+    for disc, interp in sorted_disc_pairs:
+        disc_num = interp.disc or _parse_disc_number(disc.name)
+
+        # If there's a gap in disc numbers, estimate episodes on missing disc(s)
+        missing_count = disc_num - prev_disc_num - 1
+        if missing_count > 0:
+            gap_episodes = round(missing_count * eps_per_disc_est)
+            next_offset += gap_episodes
+            logger.warning(
+                "%d missing disc(s) before D%d — advancing offset by ~%d episode(s)",
+                missing_count, disc_num, gap_episodes,
+            )
+            console.print(
+                f"  [yellow]⚠️  {missing_count} missing disc(s) before D{disc_num} — "
+                f"advancing offset by ~{gap_episodes} episode(s)[/yellow]"
+            )
+
         try:
             matched_count, extras_count, skipped_count, error_count, episode_slots = _process_tv_disc_batch(
                 disc, show, episodes, cfg, stats, all_results,
@@ -249,6 +274,7 @@ def _process_tv_batch(
             )
             # Cascade: next disc starts after all episode slots on this disc
             next_offset += episode_slots
+            prev_disc_num = disc_num
 
             display_batch_disc_result(
                 disc.name, matched_count, skipped_count, extras_count,

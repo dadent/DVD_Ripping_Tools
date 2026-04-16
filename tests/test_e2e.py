@@ -571,3 +571,188 @@ class TestE2EBatchCascadingOffsets:
         )
         assert matched2[0].episode.episode_number == 5
 
+
+class TestMissingDiscOffsetEstimation:
+    """Verify that cascading offsets correctly handle missing discs.
+
+    When a multi-disc group has gaps in disc numbers (e.g., D1, D2, D4 — D3 missing),
+    the offset for the first disc after the gap should account for the estimated
+    episodes on the missing disc(s).
+    """
+
+    # 24 episodes for S1 across 6 discs (4 eps/disc)
+    S1_EPISODES = [
+        EpisodeInfo(season_number=1, episode_number=i+1, title=f"Episode {i+1}", runtime_minutes=43)
+        for i in range(24)
+    ]
+
+    def _build_disc(self, disc_num: int, ep_count: int, runtime: float = 43.0) -> DiscFolder:
+        files = [
+            _mf(f"D{disc_num}-{chr(66+i)}_t{i:02d}.mkv", runtime + i * 0.3)
+            for i in range(ep_count)
+        ]
+        files.append(_mf(f"D{disc_num}-PlayAll.mkv", ep_count * 43.5))
+        files.append(_mf(f"D{disc_num}-Bonus.mkv", 3.0))
+        return DiscFolder(
+            path=Path(f"D:/Video/processed/GG_S1_D{disc_num}"),
+            name=f"GG_S1_D{disc_num}",
+            files=files,
+        )
+
+    def test_single_missing_disc_offset_estimation(self):
+        """D1, D2, D4, D5, D6 present (D3 missing) — D4 should start at ep 13, not ep 9."""
+        from media_renamer.scanner import classify_disc_files
+
+        # 24 episodes across 6 discs → 4 eps/disc estimate
+        disc_layout = {1: 4, 2: 4, 4: 4, 5: 4, 6: 4}  # D3 missing
+        max_disc_num = 6
+        eps_per_disc_est = len(self.S1_EPISODES) / max_disc_num  # 4.0
+
+        next_offset = 0
+        prev_disc_num = 0
+        results = {}
+
+        for disc_num, ep_count in sorted(disc_layout.items()):
+            # Estimate gap offset for missing discs
+            missing_count = disc_num - prev_disc_num - 1
+            if missing_count > 0:
+                gap_episodes = round(missing_count * eps_per_disc_est)
+                next_offset += gap_episodes
+
+            disc = self._build_disc(disc_num, ep_count)
+            classified = classify_disc_files(disc, _cfg())
+            sorted_files = sorted(classified.files, key=lambda f: f.filename)
+
+            matched, _ = match_episodes_by_duration(
+                sorted_files, self.S1_EPISODES, _cfg(),
+                episode_offset=next_offset,
+            )
+
+            results[disc_num] = {
+                "offset": next_offset,
+                "matched": [m.episode.episode_number for m in matched],
+            }
+
+            next_offset += len(matched)
+            prev_disc_num = disc_num
+
+        # D1: eps 1-4, D2: eps 5-8, (D3 missing: eps 9-12), D4: eps 13-16, D5: eps 17-20, D6: eps 21-24
+        assert results[1]["matched"] == [1, 2, 3, 4]
+        assert results[2]["matched"] == [5, 6, 7, 8]
+        assert results[4]["offset"] == 12, "D4 should start at offset 12 (skipping D3's 4 eps)"
+        assert results[4]["matched"] == [13, 14, 15, 16]
+        assert results[5]["matched"] == [17, 18, 19, 20]
+        assert results[6]["matched"] == [21, 22, 23, 24]
+
+    def test_two_consecutive_missing_discs(self):
+        """D1, D4, D5, D6 present (D2 and D3 missing)."""
+        from media_renamer.scanner import classify_disc_files
+
+        disc_layout = {1: 4, 4: 4, 5: 4, 6: 4}  # D2 and D3 missing
+        max_disc_num = 6
+        eps_per_disc_est = len(self.S1_EPISODES) / max_disc_num  # 4.0
+
+        next_offset = 0
+        prev_disc_num = 0
+        results = {}
+
+        for disc_num, ep_count in sorted(disc_layout.items()):
+            missing_count = disc_num - prev_disc_num - 1
+            if missing_count > 0:
+                gap_episodes = round(missing_count * eps_per_disc_est)
+                next_offset += gap_episodes
+
+            disc = self._build_disc(disc_num, ep_count)
+            classified = classify_disc_files(disc, _cfg())
+            sorted_files = sorted(classified.files, key=lambda f: f.filename)
+
+            matched, _ = match_episodes_by_duration(
+                sorted_files, self.S1_EPISODES, _cfg(),
+                episode_offset=next_offset,
+            )
+
+            results[disc_num] = {
+                "offset": next_offset,
+                "matched": [m.episode.episode_number for m in matched],
+            }
+
+            next_offset += len(matched)
+            prev_disc_num = disc_num
+
+        # D1: eps 1-4, (D2 missing: 5-8), (D3 missing: 9-12), D4: eps 13-16
+        assert results[1]["matched"] == [1, 2, 3, 4]
+        assert results[4]["offset"] == 12, "D4 should skip 8 eps for 2 missing discs"
+        assert results[4]["matched"] == [13, 14, 15, 16]
+        assert results[5]["matched"] == [17, 18, 19, 20]
+        assert results[6]["matched"] == [21, 22, 23, 24]
+
+    def test_first_disc_missing(self):
+        """D2, D3, D4, D5, D6 present (D1 missing) — D2 should start at ep 5."""
+        from media_renamer.scanner import classify_disc_files
+
+        disc_layout = {2: 4, 3: 4, 4: 4, 5: 4, 6: 4}  # D1 missing
+        max_disc_num = 6
+        eps_per_disc_est = len(self.S1_EPISODES) / max_disc_num  # 4.0
+
+        next_offset = 0
+        prev_disc_num = 0
+        results = {}
+
+        for disc_num, ep_count in sorted(disc_layout.items()):
+            missing_count = disc_num - prev_disc_num - 1
+            if missing_count > 0:
+                gap_episodes = round(missing_count * eps_per_disc_est)
+                next_offset += gap_episodes
+
+            disc = self._build_disc(disc_num, ep_count)
+            classified = classify_disc_files(disc, _cfg())
+            sorted_files = sorted(classified.files, key=lambda f: f.filename)
+
+            matched, _ = match_episodes_by_duration(
+                sorted_files, self.S1_EPISODES, _cfg(),
+                episode_offset=next_offset,
+            )
+
+            results[disc_num] = {
+                "offset": next_offset,
+                "matched": [m.episode.episode_number for m in matched],
+            }
+
+            next_offset += len(matched)
+            prev_disc_num = disc_num
+
+        assert results[2]["offset"] == 4, "D2 should start at offset 4 (D1 missing)"
+        assert results[2]["matched"] == [5, 6, 7, 8]
+        assert results[3]["matched"] == [9, 10, 11, 12]
+        assert results[6]["matched"] == [21, 22, 23, 24]
+
+    def test_no_missing_discs_unchanged(self):
+        """All discs present — offset estimation should not alter behavior."""
+        from media_renamer.scanner import classify_disc_files
+
+        disc_layout = {1: 4, 2: 4, 3: 4, 4: 4, 5: 4, 6: 4}
+        max_disc_num = 6
+        eps_per_disc_est = len(self.S1_EPISODES) / max_disc_num
+
+        next_offset = 0
+        prev_disc_num = 0
+
+        for disc_num, ep_count in sorted(disc_layout.items()):
+            missing_count = disc_num - prev_disc_num - 1
+            assert missing_count == 0, "No gaps expected"
+
+            disc = self._build_disc(disc_num, ep_count)
+            classified = classify_disc_files(disc, _cfg())
+            sorted_files = sorted(classified.files, key=lambda f: f.filename)
+
+            matched, _ = match_episodes_by_duration(
+                sorted_files, self.S1_EPISODES, _cfg(),
+                episode_offset=next_offset,
+            )
+
+            assert len(matched) == ep_count
+            next_offset += len(matched)
+            prev_disc_num = disc_num
+
+        assert next_offset == 24
+
